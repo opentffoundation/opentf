@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mitchellh/cli"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -23,31 +22,33 @@ func TestGraph(t *testing.T) {
 	testCopyDir(t, testFixturePath("graph"), td)
 	defer testChdir(t, td)()
 
-	ui := new(cli.MockUi)
+	view, done := testView(t)
 	c := &GraphCommand{
 		Meta: Meta{
 			testingOverrides: metaOverridesForProvider(applyFixtureProvider()),
-			Ui:               ui,
+			View:             view,
 		},
 	}
 
 	args := []string{}
-	if code := c.Run(args); code != 0 {
-		t.Fatalf("bad: \n%s", ui.ErrorWriter.String())
+	code := c.Run(args)
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, output.Stderr())
 	}
 
-	output := ui.OutputWriter.String()
-	if !strings.Contains(output, `provider[\"registry.opentofu.org/hashicorp/test\"]`) {
-		t.Fatalf("doesn't look like digraph: %s", output)
+	stdout := output.Stdout()
+	if !strings.Contains(stdout, `provider[\"registry.opentofu.org/hashicorp/test\"]`) {
+		t.Fatalf("doesn't look like digraph: %s", stdout)
 	}
 }
 
 func TestGraph_multipleArgs(t *testing.T) {
-	ui := new(cli.MockUi)
+	view, done := testView(t)
 	c := &GraphCommand{
 		Meta: Meta{
 			testingOverrides: metaOverridesForProvider(applyFixtureProvider()),
-			Ui:               ui,
+			View:             view,
 		},
 	}
 
@@ -55,8 +56,10 @@ func TestGraph_multipleArgs(t *testing.T) {
 		"bad",
 		"bad",
 	}
-	if code := c.Run(args); code != 1 {
-		t.Fatalf("bad: \n%s", ui.OutputWriter.String())
+	code := c.Run(args)
+	output := done(t)
+	if code != 1 {
+		t.Fatalf("bad status code: %d\n\n%s", code, output.Stderr())
 	}
 }
 
@@ -65,22 +68,24 @@ func TestGraph_noArgs(t *testing.T) {
 	testCopyDir(t, testFixturePath("graph"), td)
 	defer testChdir(t, td)()
 
-	ui := new(cli.MockUi)
+	view, done := testView(t)
 	c := &GraphCommand{
 		Meta: Meta{
 			testingOverrides: metaOverridesForProvider(applyFixtureProvider()),
-			Ui:               ui,
+			View:             view,
 		},
 	}
 
 	args := []string{}
-	if code := c.Run(args); code != 0 {
-		t.Fatalf("bad: \n%s", ui.ErrorWriter.String())
+	code := c.Run(args)
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, output.Stderr())
 	}
 
-	output := ui.OutputWriter.String()
-	if !strings.Contains(output, `provider[\"registry.opentofu.org/hashicorp/test\"]`) {
-		t.Fatalf("doesn't look like digraph: %s", output)
+	stdout := output.Stdout()
+	if !strings.Contains(stdout, `provider[\"registry.opentofu.org/hashicorp/test\"]`) {
+		t.Fatalf("doesn't look like digraph: %s", stdout)
 	}
 }
 
@@ -89,19 +94,21 @@ func TestGraph_noConfig(t *testing.T) {
 	os.MkdirAll(td, 0755)
 	defer testChdir(t, td)()
 
-	ui := new(cli.MockUi)
+	view, done := testView(t)
 	c := &GraphCommand{
 		Meta: Meta{
 			testingOverrides: metaOverridesForProvider(applyFixtureProvider()),
-			Ui:               ui,
+			View:             view,
 		},
 	}
 
 	// Running the graph command without a config should not panic,
 	// but this may be an error at some point in the future.
 	args := []string{"-type", "apply"}
-	if code := c.Run(args); code != 0 {
-		t.Fatalf("bad: \n%s", ui.ErrorWriter.String())
+	code := c.Run(args)
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, output.Stderr())
 	}
 }
 
@@ -142,23 +149,25 @@ func TestGraph_plan(t *testing.T) {
 
 	planPath := testPlanFile(t, configSnap, states.NewState(), plan)
 
-	ui := new(cli.MockUi)
+	view, done := testView(t)
 	c := &GraphCommand{
 		Meta: Meta{
 			testingOverrides: metaOverridesForProvider(applyFixtureProvider()),
-			Ui:               ui,
+			View:             view,
 		},
 	}
 
 	args := []string{
 		"-plan", planPath,
 	}
-	if code := c.Run(args); code != 0 {
-		t.Fatalf("bad: \n%s", ui.ErrorWriter.String())
+	code := c.Run(args)
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, output.Stderr())
 	}
 
-	output := ui.OutputWriter.String()
-	if !strings.Contains(output, `provider[\"registry.opentofu.org/hashicorp/test\"]`) {
-		t.Fatalf("doesn't look like digraph: %s", output)
+	stdout := output.Stdout()
+	if !strings.Contains(stdout, `provider[\"registry.opentofu.org/hashicorp/test\"]`) {
+		t.Fatalf("doesn't look like digraph: %s", stdout)
 	}
 }
