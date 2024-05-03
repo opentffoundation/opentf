@@ -17,6 +17,11 @@ import (
 
 	svchost "github.com/hashicorp/terraform-svchost"
 	"github.com/mitchellh/go-homedir"
+	"github.com/zclconf/go-cty/cty"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/command/clistate"
 	"github.com/opentofu/opentofu/internal/command/views"
@@ -31,7 +36,6 @@ import (
 	"github.com/opentofu/opentofu/internal/states/statemgr"
 	"github.com/opentofu/opentofu/internal/tfdiags"
 	"github.com/opentofu/opentofu/internal/tofu"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // DefaultStateName is the name of the default, initial state that every
@@ -169,7 +173,7 @@ type Local interface {
 	// backend's implementations of this to understand what this actually
 	// does, because this operation has no well-defined contract aside from
 	// "whatever it already does".
-	LocalRun(*Operation) (*LocalRun, statemgr.Full, tfdiags.Diagnostics)
+	LocalRun(context.Context, *Operation) (*LocalRun, statemgr.Full, tfdiags.Diagnostics)
 }
 
 // LocalRun represents the assortment of objects that we can collect or
@@ -348,10 +352,18 @@ func (o *Operation) Config() (*configs.Config, tfdiags.Diagnostics) {
 // more complex cases where e.g. diagnostics are interleaved with other
 // output, but terminating immediately after reporting error diagnostics is
 // common and can be expressed concisely via this method.
-func (o *Operation) ReportResult(op *RunningOperation, diags tfdiags.Diagnostics) {
+func (o *Operation) ReportResult(ctx context.Context, op *RunningOperation, diags tfdiags.Diagnostics) {
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Operation.ReportResult")
+	defer span.End()
+
+	span.SetAttributes(attribute.Int("diagnostics", len(diags)))
+
 	if diags.HasErrors() {
+		span.SetStatus(codes.Error, "Operation failed")
 		op.Result = OperationFailure
 	} else {
+		span.SetStatus(codes.Ok, "Operation succeeded")
 		op.Result = OperationSuccess
 	}
 	if o.View != nil {

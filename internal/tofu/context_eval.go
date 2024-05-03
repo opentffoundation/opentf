@@ -6,7 +6,10 @@
 package tofu
 
 import (
+	"context"
 	"log"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
@@ -37,10 +40,14 @@ type EvalOpts struct {
 // the returned scope may be nil. If it is not nil then it may still be used
 // to attempt expression evaluation or other analysis, but some expressions
 // may not behave as expected.
-func (c *Context) Eval(config *configs.Config, state *states.State, moduleAddr addrs.ModuleInstance, opts *EvalOpts) (*lang.Scope, tfdiags.Diagnostics) {
+func (c *Context) Eval(ctx context.Context, config *configs.Config, state *states.State, moduleAddr addrs.ModuleInstance, opts *EvalOpts) (*lang.Scope, tfdiags.Diagnostics) {
 	// This is intended for external callers such as the "tofu console"
 	// command. Internally, we create an evaluator in c.walk before walking
 	// the graph, and create scopes in ContextGraphWalker.
+
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Context.Eval")
+	defer span.End()
 
 	var diags tfdiags.Diagnostics
 	defer c.acquireRun("eval")()
@@ -59,7 +66,7 @@ func (c *Context) Eval(config *configs.Config, state *states.State, moduleAddr a
 	// user-friendly error messages if they are not all present, and so
 	// the error message from checkInputVariables should never be seen and
 	// includes language asking the user to report a bug.
-	varDiags := checkInputVariables(config.Module.Variables, variables)
+	varDiags := checkInputVariables(ctx, config.Module.Variables, variables)
 	diags = diags.Append(varDiags)
 
 	log.Printf("[DEBUG] Building and walking 'eval' graph")
@@ -69,7 +76,7 @@ func (c *Context) Eval(config *configs.Config, state *states.State, moduleAddr a
 		State:              state,
 		RootVariableValues: variables,
 		Plugins:            c.plugins,
-	}).Build(addrs.RootModuleInstance)
+	}).Build(nil, addrs.RootModuleInstance)
 	diags = diags.Append(moreDiags)
 	if moreDiags.HasErrors() {
 		return nil, diags
@@ -80,7 +87,7 @@ func (c *Context) Eval(config *configs.Config, state *states.State, moduleAddr a
 		Config:     config,
 	}
 
-	walker, moreDiags = c.walk(graph, walkEval, walkOpts)
+	walker, moreDiags = c.walk(ctx, graph, walkEval, walkOpts)
 	diags = diags.Append(moreDiags)
 	if walker != nil {
 		diags = diags.Append(walker.NonFatalDiagnostics)
@@ -97,5 +104,5 @@ func (c *Context) Eval(config *configs.Config, state *states.State, moduleAddr a
 	// caches its contexts, so we should get hold of the context that was
 	// previously used for evaluation here, unless we skipped walking.
 	evalCtx := walker.EnterPath(moduleAddr)
-	return evalCtx.EvaluationScope(nil, nil, EvalDataForNoInstanceKey), diags
+	return evalCtx.EvaluationScope(ctx, nil, nil, EvalDataForNoInstanceKey), diags
 }

@@ -6,6 +6,8 @@
 package providers
 
 import (
+	"context"
+
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/opentofu/opentofu/internal/configs/configschema"
@@ -21,31 +23,31 @@ type Interface interface {
 	// for initial validation.  This could result in some potential
 	// memory savings.
 
-	// GetSchema returns the complete schema for the provider.
-	GetProviderSchema() GetProviderSchemaResponse
+	// GetProviderSchema returns the complete schema for the provider.
+	GetProviderSchema(traceCtx context.Context) GetProviderSchemaResponse
 
 	// ValidateProviderConfig allows the provider to validate the configuration.
 	// The ValidateProviderConfigResponse.PreparedConfig field is unused. The
 	// final configuration is not stored in the state, and any modifications
 	// that need to be made must be made during the Configure method call.
-	ValidateProviderConfig(ValidateProviderConfigRequest) ValidateProviderConfigResponse
+	ValidateProviderConfig(context.Context, ValidateProviderConfigRequest) ValidateProviderConfigResponse
 
 	// ValidateResourceConfig allows the provider to validate the resource
 	// configuration values.
-	ValidateResourceConfig(ValidateResourceConfigRequest) ValidateResourceConfigResponse
+	ValidateResourceConfig(context.Context, ValidateResourceConfigRequest) ValidateResourceConfigResponse
 
 	// ValidateDataResourceConfig allows the provider to validate the data source
 	// configuration values.
-	ValidateDataResourceConfig(ValidateDataResourceConfigRequest) ValidateDataResourceConfigResponse
+	ValidateDataResourceConfig(context.Context, ValidateDataResourceConfigRequest) ValidateDataResourceConfigResponse
 
 	// UpgradeResourceState is called when the state loader encounters an
 	// instance state whose schema version is less than the one reported by the
 	// currently-used version of the corresponding provider, and the upgraded
 	// result is used for any further processing.
-	UpgradeResourceState(UpgradeResourceStateRequest) UpgradeResourceStateResponse
+	UpgradeResourceState(context.Context, UpgradeResourceStateRequest) UpgradeResourceStateResponse
 
-	// Configure configures and initialized the provider.
-	ConfigureProvider(ConfigureProviderRequest) ConfigureProviderResponse
+	// ConfigureProvider configures and initialized the provider.
+	ConfigureProvider(context.Context, ConfigureProviderRequest) ConfigureProviderResponse
 
 	// Stop is called when the provider should halt any in-flight actions.
 	//
@@ -60,29 +62,29 @@ type Interface interface {
 	Stop() error
 
 	// ReadResource refreshes a resource and returns its current state.
-	ReadResource(ReadResourceRequest) ReadResourceResponse
+	ReadResource(context.Context, ReadResourceRequest) ReadResourceResponse
 
 	// PlanResourceChange takes the current state and proposed state of a
 	// resource, and returns the planned final state.
-	PlanResourceChange(PlanResourceChangeRequest) PlanResourceChangeResponse
+	PlanResourceChange(context.Context, PlanResourceChangeRequest) PlanResourceChangeResponse
 
 	// ApplyResourceChange takes the planned state for a resource, which may
 	// yet contain unknown computed values, and applies the changes returning
 	// the final state.
-	ApplyResourceChange(ApplyResourceChangeRequest) ApplyResourceChangeResponse
+	ApplyResourceChange(context.Context, ApplyResourceChangeRequest) ApplyResourceChangeResponse
 
 	// ImportResourceState requests that the given resource be imported.
 	ImportResourceState(ImportResourceStateRequest) ImportResourceStateResponse
 
 	// ReadDataSource returns the data source's current state.
-	ReadDataSource(ReadDataSourceRequest) ReadDataSourceResponse
+	ReadDataSource(context.Context, ReadDataSourceRequest) ReadDataSourceResponse
 
 	// GetFunctions returns a full list of functions defined in this provider.  It should be a super
 	// set of the functions returned in GetProviderSchema()
 	GetFunctions() GetFunctionsResponse
 
 	// CallFunction requests that the given function is called and response returned.
-	CallFunction(CallFunctionRequest) CallFunctionResponse
+	CallFunction(context.Context, CallFunctionRequest) CallFunctionResponse
 
 	// Close shuts down the plugin process if applicable.
 	Close() error

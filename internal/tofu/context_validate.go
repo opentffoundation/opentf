@@ -6,13 +6,16 @@
 package tofu
 
 import (
+	"context"
 	"log"
+
+	"github.com/zclconf/go-cty/cty"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // Validate performs semantic validation of a configuration, and returns
@@ -26,12 +29,16 @@ import (
 // such as root module input variables. However, the Plan function includes
 // all of the same checks as Validate, in addition to the other work it does
 // to consider the previous run state and the planning options.
-func (c *Context) Validate(config *configs.Config) tfdiags.Diagnostics {
+func (c *Context) Validate(ctx context.Context, config *configs.Config) tfdiags.Diagnostics {
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Context.Validate")
+	defer span.End()
+
 	defer c.acquireRun("validate")()
 
 	var diags tfdiags.Diagnostics
 
-	moreDiags := c.checkConfigDependencies(config)
+	moreDiags := c.checkConfigDependencies(ctx, config)
 	diags = diags.Append(moreDiags)
 	// If required dependencies are not available then we'll bail early since
 	// otherwise we're likely to just see a bunch of other errors related to
@@ -66,13 +73,13 @@ func (c *Context) Validate(config *configs.Config) tfdiags.Diagnostics {
 		State:              states.NewState(),
 		RootVariableValues: varValues,
 		Operation:          walkValidate,
-	}).Build(addrs.RootModuleInstance)
+	}).Build(ctx, addrs.RootModuleInstance)
 	diags = diags.Append(moreDiags)
 	if moreDiags.HasErrors() {
 		return diags
 	}
 
-	walker, walkDiags := c.walk(graph, walkValidate, &graphWalkOpts{
+	walker, walkDiags := c.walk(ctx, graph, walkValidate, &graphWalkOpts{
 		Config: config,
 	})
 	diags = diags.Append(walker.NonFatalDiagnostics)

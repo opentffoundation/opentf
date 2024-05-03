@@ -6,8 +6,11 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
@@ -36,13 +39,17 @@ func (cp *contextPlugins) HasProvider(addr addrs.Provider) bool {
 	return ok
 }
 
-func (cp *contextPlugins) NewProviderInstance(addr addrs.Provider) (providers.Interface, error) {
+func (cp *contextPlugins) NewProviderInstance(ctx context.Context, addr addrs.Provider) (providers.Interface, error) {
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "contextPlugins.NewProviderInstance")
+	defer span.End()
+
 	f, ok := cp.providerFactories[addr]
 	if !ok {
 		return nil, fmt.Errorf("unavailable provider %q", addr.String())
 	}
 
-	return f()
+	return f(ctx)
 
 }
 
@@ -66,7 +73,12 @@ func (cp *contextPlugins) NewProvisionerInstance(typ string) (provisioners.Inter
 // ProviderSchema memoizes results by unique provider address, so it's fine
 // to repeatedly call this method with the same address if various different
 // parts of OpenTofu all need the same schema information.
-func (cp *contextPlugins) ProviderSchema(addr addrs.Provider) (providers.ProviderSchema, error) {
+func (cp *contextPlugins) ProviderSchema(ctx context.Context, addr addrs.Provider) (providers.ProviderSchema, error) {
+	// Commented this out as it's WAY too noisy
+	//var span trace.Span
+	//ctx, span = tracer.Start(ctx, "contextPlugins.ProviderSchema")
+	//defer span.End()
+
 	// Check the global schema cache first.
 	// This cache is only written by the provider client, and transparently
 	// used by GetProviderSchema, but we check it here because at this point we
@@ -79,25 +91,26 @@ func (cp *contextPlugins) ProviderSchema(addr addrs.Provider) (providers.Provide
 	// BUG This SHORT CIRCUITS the logic below and is not the only code which inserts provider schemas into the cache!!
 	schemas, ok := providers.SchemaCache.Get(addr)
 	if ok {
+		//span.AddEvent("Serving provider schema from global schema cache")
 		log.Printf("[TRACE] tofu.contextPlugins: Serving provider %q schema from global schema cache", addr)
 		return schemas, nil
 	}
 
 	log.Printf("[TRACE] tofu.contextPlugins: Initializing provider %q to read its schema", addr)
-	provider, err := cp.NewProviderInstance(addr)
+	provider, err := cp.NewProviderInstance(ctx, addr)
 	if err != nil {
 		return schemas, fmt.Errorf("failed to instantiate provider %q to obtain schema: %w", addr, err)
 	}
 	defer provider.Close()
 
-	resp := provider.GetProviderSchema()
+	resp := provider.GetProviderSchema(ctx)
 	if resp.Diagnostics.HasErrors() {
 		return resp, fmt.Errorf("failed to retrieve schema from provider %q: %w", addr, resp.Diagnostics.Err())
 	}
 
 	if resp.Provider.Version < 0 {
 		// We're not using the version numbers here yet, but we'll check
-		// for validity anyway in case we start using them in future.
+		// for validity anyway in case we start using them in the future.
 		return resp, fmt.Errorf("provider %s has invalid negative schema version for its configuration blocks,which is a bug in the provider ", addr)
 	}
 
@@ -128,8 +141,13 @@ func (cp *contextPlugins) ProviderSchema(addr addrs.Provider) (providers.Provide
 // reads the full schema of the given provider and then extracts just the
 // provider's configuration schema, which defines what's expected in a
 // "provider" block in the configuration when configuring this provider.
-func (cp *contextPlugins) ProviderConfigSchema(providerAddr addrs.Provider) (*configschema.Block, error) {
-	providerSchema, err := cp.ProviderSchema(providerAddr)
+func (cp *contextPlugins) ProviderConfigSchema(ctx context.Context, providerAddr addrs.Provider) (*configschema.Block, error) {
+	// Commented out as it's WAY too noisy
+	//var span trace.Span
+	//ctx, span = tracer.Start(ctx, "contextPlugins.ProviderConfigSchema")
+	//defer span.End()
+
+	providerSchema, err := cp.ProviderSchema(ctx, providerAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +166,16 @@ func (cp *contextPlugins) ProviderConfigSchema(providerAddr addrs.Provider) (*co
 // Managed resource types have versioned schemas, so the second return value
 // is the current schema version number for the requested resource. The version
 // is irrelevant for other resource modes.
-func (cp *contextPlugins) ResourceTypeSchema(providerAddr addrs.Provider, resourceMode addrs.ResourceMode, resourceType string) (*configschema.Block, uint64, error) {
-	providerSchema, err := cp.ProviderSchema(providerAddr)
+func (cp *contextPlugins) ResourceTypeSchema(ctx context.Context, providerAddr addrs.Provider, resourceMode addrs.ResourceMode, resourceType string) (*configschema.Block, uint64, error) {
+	if ctx == nil {
+		panic("JAMES2")
+	}
+	// commented out as it's WAY too noisy
+	//var span trace.Span
+	//ctx, span = tracer.Start(ctx, "contextPlugins.ResourceTypeSchema")
+	//defer span.End()
+
+	providerSchema, err := cp.ProviderSchema(ctx, providerAddr)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -7,10 +7,13 @@ package tofu
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/zclconf/go-cty/cty"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/checks"
@@ -139,10 +142,14 @@ func (w *ContextGraphWalker) init() {
 	}
 }
 
-func (w *ContextGraphWalker) Execute(ctx EvalContext, n GraphNodeExecutable) tfdiags.Diagnostics {
+func (w *ContextGraphWalker) Execute(traceCtx context.Context, ctx EvalContext, n GraphNodeExecutable) tfdiags.Diagnostics {
+	var span trace.Span
+	traceCtx, span = tracer.Start(traceCtx, "ContextGraphWalker.Execute", trace.WithAttributes(attribute.String("node type", fmt.Sprintf("%T", n))))
+	defer span.End()
+
 	// Acquire a lock on the semaphore
 	w.Context.parallelSem.Acquire()
 	defer w.Context.parallelSem.Release()
 
-	return n.Execute(ctx, w.Operation)
+	return n.Execute(traceCtx, ctx, w.Operation)
 }

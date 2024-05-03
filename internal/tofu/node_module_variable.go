@@ -6,6 +6,7 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -44,7 +45,7 @@ func (n *nodeExpandModuleVariable) temporaryValue() bool {
 	return true
 }
 
-func (n *nodeExpandModuleVariable) DynamicExpand(ctx EvalContext) (*Graph, error) {
+func (n *nodeExpandModuleVariable) DynamicExpand(traceCtx context.Context, ctx EvalContext) (*Graph, error) {
 	var g Graph
 
 	// If this variable has preconditions, we need to report these checks now.
@@ -168,7 +169,7 @@ func (n *nodeModuleVariable) ModulePath() addrs.Module {
 }
 
 // GraphNodeExecutable
-func (n *nodeModuleVariable) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *nodeModuleVariable) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	log.Printf("[TRACE] nodeModuleVariable: evaluating %s", n.Addr)
 
 	var val cty.Value
@@ -176,10 +177,10 @@ func (n *nodeModuleVariable) Execute(ctx EvalContext, op walkOperation) (diags t
 
 	switch op {
 	case walkValidate:
-		val, err = n.evalModuleVariable(ctx, true)
+		val, err = n.evalModuleVariable(traceCtx, ctx, true)
 		diags = diags.Append(err)
 	default:
-		val, err = n.evalModuleVariable(ctx, false)
+		val, err = n.evalModuleVariable(traceCtx, ctx, false)
 		diags = diags.Append(err)
 	}
 	if diags.HasErrors() {
@@ -191,7 +192,7 @@ func (n *nodeModuleVariable) Execute(ctx EvalContext, op walkOperation) (diags t
 	_, call := n.Addr.Module.CallInstance()
 	ctx.SetModuleCallArgument(call, n.Addr.Variable, val)
 
-	return evalVariableValidations(n.Addr, n.Config, n.Expr, ctx)
+	return evalVariableValidations(traceCtx, n.Addr, n.Config, n.Expr, ctx)
 }
 
 // dag.GraphNodeDotter impl.
@@ -217,7 +218,7 @@ func (n *nodeModuleVariable) DotNode(name string, opts *dag.DotOpts) *dag.DotNod
 // validateOnly indicates that this evaluation is only for config
 // validation, and we will not have any expansion module instance
 // repetition data.
-func (n *nodeModuleVariable) evalModuleVariable(ctx EvalContext, validateOnly bool) (cty.Value, error) {
+func (n *nodeModuleVariable) evalModuleVariable(traceCtx context.Context, ctx EvalContext, validateOnly bool) (cty.Value, error) {
 	var diags tfdiags.Diagnostics
 	var givenVal cty.Value
 	var errSourceRange tfdiags.SourceRange
@@ -240,8 +241,8 @@ func (n *nodeModuleVariable) evalModuleVariable(ctx EvalContext, validateOnly bo
 			moduleInstanceRepetitionData = ctx.InstanceExpander().GetModuleInstanceRepetitionData(n.ModuleInstance)
 		}
 
-		scope := ctx.EvaluationScope(nil, nil, moduleInstanceRepetitionData)
-		val, moreDiags := scope.EvalExpr(expr, cty.DynamicPseudoType)
+		scope := ctx.EvaluationScope(traceCtx, nil, nil, moduleInstanceRepetitionData)
+		val, moreDiags := scope.EvalExpr(traceCtx, expr, cty.DynamicPseudoType)
 		diags = diags.Append(moreDiags)
 		if moreDiags.HasErrors() {
 			return cty.DynamicVal, diags.ErrWithWarnings()

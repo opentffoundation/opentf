@@ -1,22 +1,29 @@
 package tofu
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/providers"
 	"github.com/opentofu/opentofu/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
-	"github.com/zclconf/go-cty/cty/function"
 )
 
 // This builds a provider function using an EvalContext and some additional information
 // This is split out of BuiltinEvalContext for testing
-func evalContextProviderFunction(ctx EvalContext, mc *configs.Config, op walkOperation, pf addrs.ProviderFunction, rng tfdiags.SourceRange) (*function.Function, tfdiags.Diagnostics) {
+func evalContextProviderFunction(traceCtx context.Context, ctx EvalContext, mc *configs.Config, op walkOperation, pf addrs.ProviderFunction, rng tfdiags.SourceRange) (*function.Function, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
+
+	var span trace.Span
+	traceCtx, span = tracer.Start(traceCtx, "evalContextProviderFunction")
+	defer span.End()
 
 	pr, ok := mc.Module.ProviderRequirements.RequiredProviders[pf.ProviderName]
 	if !ok {
@@ -72,7 +79,7 @@ func evalContextProviderFunction(ctx EvalContext, mc *configs.Config, op walkOpe
 	}
 
 	// First try to look up the function from provider schema
-	schema := provider.GetProviderSchema()
+	schema := provider.GetProviderSchema(traceCtx)
 	if schema.Diagnostics.HasErrors() {
 		return nil, schema.Diagnostics
 	}
@@ -118,7 +125,7 @@ func evalContextProviderFunction(ctx EvalContext, mc *configs.Config, op walkOpe
 		}
 	}
 
-	fn := providerFunction(pf.Function, spec, provider)
+	fn := providerFunction(traceCtx, pf.Function, spec, provider)
 
 	return &fn, nil
 
@@ -127,7 +134,7 @@ func evalContextProviderFunction(ctx EvalContext, mc *configs.Config, op walkOpe
 // Turn a provider function spec into a cty callable function
 // This will use the instance factory to get a provider to support the
 // function call.
-func providerFunction(name string, spec providers.FunctionSpec, provider providers.Interface) function.Function {
+func providerFunction(ctx context.Context, name string, spec providers.FunctionSpec, provider providers.Interface) function.Function {
 	params := make([]function.Parameter, len(spec.Parameters))
 	for i, param := range spec.Parameters {
 		params[i] = providerFunctionParameter(param)
@@ -140,7 +147,9 @@ func providerFunction(name string, spec providers.FunctionSpec, provider provide
 	}
 
 	impl := func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		resp := provider.CallFunction(providers.CallFunctionRequest{
+		// TODO: Nicely pass the the ctx into this function call, don't grab it from the parent function
+		// this causes separated traces right now but we're backed into a corner with the impl type coming from go-cty
+		resp := provider.CallFunction(ctx, providers.CallFunctionRequest{
 			Name:      name,
 			Arguments: args,
 		})

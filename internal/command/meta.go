@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/mitchellh/cli"
 	"github.com/mitchellh/colorstring"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/backend"
@@ -471,7 +472,11 @@ func (m *Meta) CommandContext() context.Context {
 // If the operation runs to completion then no error is returned even if the
 // operation itself is unsuccessful. Use the "Result" field of the
 // returned operation object to recognize operation-level failure.
-func (m *Meta) RunOperation(b backend.Enhanced, opReq *backend.Operation) (*backend.RunningOperation, error) {
+func (m *Meta) RunOperation(ctx context.Context, b backend.Enhanced, opReq *backend.Operation) (*backend.RunningOperation, error) {
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Meta.RunOperation")
+	defer span.End()
+
 	if opReq.View == nil {
 		panic("RunOperation called with nil View")
 	}
@@ -479,7 +484,7 @@ func (m *Meta) RunOperation(b backend.Enhanced, opReq *backend.Operation) (*back
 		opReq.ConfigDir = m.normalizePath(opReq.ConfigDir)
 	}
 
-	op, err := b.Operation(context.Background(), opReq)
+	op, err := b.Operation(ctx, opReq)
 	if err != nil {
 		return nil, fmt.Errorf("error starting operation: %w", err)
 	}
@@ -822,7 +827,7 @@ func (m *Meta) applyStateArguments(args *arguments.State) {
 
 // checkRequiredVersion loads the config and check if the
 // core version requirements are satisfied.
-func (m *Meta) checkRequiredVersion() tfdiags.Diagnostics {
+func (m *Meta) checkRequiredVersion(ctx context.Context) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	loader, err := m.initConfigLoader()
@@ -843,7 +848,7 @@ func (m *Meta) checkRequiredVersion() tfdiags.Diagnostics {
 		return diags
 	}
 
-	versionDiags := tofu.CheckCoreVersionRequirements(config)
+	versionDiags := tofu.CheckCoreVersionRequirements(ctx, config)
 	if versionDiags.HasErrors() {
 		diags = diags.Append(versionDiags)
 		return diags
@@ -857,7 +862,7 @@ func (m *Meta) checkRequiredVersion() tfdiags.Diagnostics {
 // it could potentially return nil without errors. It is the
 // responsibility of the caller to handle the lack of schema
 // information accordingly
-func (c *Meta) MaybeGetSchemas(state *states.State, config *configs.Config) (*tofu.Schemas, tfdiags.Diagnostics) {
+func (c *Meta) MaybeGetSchemas(ctx context.Context, state *states.State, config *configs.Config) (*tofu.Schemas, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	path, err := os.Getwd()
@@ -886,7 +891,7 @@ func (c *Meta) MaybeGetSchemas(state *states.State, config *configs.Config) (*to
 			return nil, diags
 		}
 		var schemaDiags tfdiags.Diagnostics
-		schemas, schemaDiags := tfCtx.Schemas(config, state)
+		schemas, schemaDiags := tfCtx.Schemas(ctx, config, state)
 		diags = diags.Append(schemaDiags)
 		if schemaDiags.HasErrors() {
 			return nil, diags

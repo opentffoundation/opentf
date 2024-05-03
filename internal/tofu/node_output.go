@@ -6,6 +6,7 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -56,7 +57,7 @@ func (n *nodeExpandOutput) temporaryValue() bool {
 	return !n.Module.IsRoot()
 }
 
-func (n *nodeExpandOutput) DynamicExpand(ctx EvalContext) (*Graph, error) {
+func (n *nodeExpandOutput) DynamicExpand(traceCtx context.Context, ctx EvalContext) (*Graph, error) {
 	expander := ctx.InstanceExpander()
 	changes := ctx.Changes()
 
@@ -302,7 +303,7 @@ func (n *NodeApplyableOutput) References() []*addrs.Reference {
 }
 
 // GraphNodeExecutable
-func (n *NodeApplyableOutput) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *NodeApplyableOutput) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	state := ctx.State()
 	if state == nil {
 		return
@@ -330,6 +331,7 @@ func (n *NodeApplyableOutput) Execute(ctx EvalContext, op walkOperation) (diags 
 			checkRuleSeverity = tfdiags.Warning
 		}
 		checkDiags := evalCheckRules(
+			traceCtx,
 			addrs.OutputPrecondition,
 			n.Config.Preconditions,
 			ctx, n.Addr, EvalDataForNoInstanceKey,
@@ -347,13 +349,13 @@ func (n *NodeApplyableOutput) Execute(ctx EvalContext, op walkOperation) (diags 
 		// This has to run before we have a state lock, since evaluation also
 		// reads the state
 		var evalDiags tfdiags.Diagnostics
-		val, evalDiags = ctx.EvaluateExpr(n.Config.Expr, cty.DynamicPseudoType, nil)
+		val, evalDiags = ctx.EvaluateExpr(nil, n.Config.Expr, cty.DynamicPseudoType, nil)
 		diags = diags.Append(evalDiags)
 
 		// We'll handle errors below, after we have loaded the module.
 		// Outputs don't have a separate mode for validation, so validate
 		// depends_on expressions here too
-		diags = diags.Append(validateDependsOn(ctx, n.Config.DependsOn))
+		diags = diags.Append(validateDependsOn(traceCtx, ctx, n.Config.DependsOn))
 
 		// For root module outputs in particular, an output value must be
 		// statically declared as sensitive in order to dynamically return
@@ -451,7 +453,7 @@ func (n *NodeDestroyableOutput) temporaryValue() bool {
 }
 
 // GraphNodeExecutable
-func (n *NodeDestroyableOutput) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeDestroyableOutput) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	state := ctx.State()
 	if state == nil {
 		return nil

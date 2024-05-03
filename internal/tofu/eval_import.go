@@ -6,17 +6,19 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/gocty"
+
 	"github.com/opentofu/opentofu/internal/instances"
 	"github.com/opentofu/opentofu/internal/lang/marks"
 	"github.com/opentofu/opentofu/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
-	"github.com/zclconf/go-cty/cty/gocty"
 )
 
-func evaluateImportIdExpression(expr hcl.Expression, ctx EvalContext, keyData instances.RepetitionData) (string, tfdiags.Diagnostics) {
+func evaluateImportIdExpression(tracedCtx context.Context, expr hcl.Expression, ctx EvalContext, keyData instances.RepetitionData) (string, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	if expr == nil {
@@ -29,7 +31,7 @@ func evaluateImportIdExpression(expr hcl.Expression, ctx EvalContext, keyData in
 	}
 
 	// evaluate the import ID and take into consideration the for_each key (if exists)
-	importIdVal, evalDiags := evaluateExprWithRepetitionData(ctx, expr, cty.String, keyData)
+	importIdVal, evalDiags := evaluateExprWithRepetitionData(tracedCtx, ctx, expr, cty.String, keyData)
 	diags = diags.Append(evalDiags)
 
 	if importIdVal.IsNull() {
@@ -80,7 +82,7 @@ func evaluateImportIdExpression(expr hcl.Expression, ctx EvalContext, keyData in
 // it to produce a value, while taking into consideration any repetition key
 // (a single combination of each.key and each.value of a for_each argument)
 // that should be a part of the scope.
-func evaluateExprWithRepetitionData(ctx EvalContext, expr hcl.Expression, wantType cty.Type, keyData instances.RepetitionData) (cty.Value, tfdiags.Diagnostics) {
-	scope := ctx.EvaluationScope(nil, nil, keyData)
-	return scope.EvalExpr(expr, wantType)
+func evaluateExprWithRepetitionData(traceCtx context.Context, ctx EvalContext, expr hcl.Expression, wantType cty.Type, keyData instances.RepetitionData) (cty.Value, tfdiags.Diagnostics) {
+	scope := ctx.EvaluationScope(traceCtx, nil, nil, keyData)
+	return scope.EvalExpr(traceCtx, expr, wantType)
 }

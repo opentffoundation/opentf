@@ -6,10 +6,12 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
 
 	"github.com/zclconf/go-cty/cty"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
@@ -26,7 +28,11 @@ import (
 //
 // Even if the returned diagnostics contains errors, Apply always returns the
 // resulting state which is likely to have been partially-updated.
-func (c *Context) Apply(plan *plans.Plan, config *configs.Config) (*states.State, tfdiags.Diagnostics) {
+func (c *Context) Apply(ctx context.Context, plan *plans.Plan, config *configs.Config) (*states.State, tfdiags.Diagnostics) {
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Context.Apply")
+	defer span.End()
+
 	defer c.acquireRun("apply")()
 
 	log.Printf("[DEBUG] Building and walking apply graph for %s plan", plan.UIMode)
@@ -60,7 +66,7 @@ func (c *Context) Apply(plan *plans.Plan, config *configs.Config) (*states.State
 	}
 
 	workingState := plan.PriorState.DeepCopy()
-	walker, walkDiags := c.walk(graph, operation, &graphWalkOpts{
+	walker, walkDiags := c.walk(ctx, graph, operation, &graphWalkOpts{
 		Config:     config,
 		InputState: workingState,
 		Changes:    plan.Changes,
@@ -180,7 +186,7 @@ func (c *Context) applyGraph(plan *plans.Plan, config *configs.Config, validate 
 		ForceReplace:       plan.ForceReplaceAddrs,
 		Operation:          operation,
 		ExternalReferences: plan.ExternalReferences,
-	}).Build(addrs.RootModuleInstance)
+	}).Build(nil, addrs.RootModuleInstance)
 	diags = diags.Append(moreDiags)
 	if moreDiags.HasErrors() {
 		return nil, walkApply, diags

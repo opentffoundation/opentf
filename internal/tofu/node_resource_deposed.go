@@ -6,6 +6,7 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -84,11 +85,11 @@ func (n *NodePlanDeposedResourceInstanceObject) References() []*addrs.Reference 
 }
 
 // GraphNodeEvalable impl.
-func (n *NodePlanDeposedResourceInstanceObject) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *NodePlanDeposedResourceInstanceObject) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	log.Printf("[TRACE] NodePlanDeposedResourceInstanceObject: planning %s deposed object %s", n.Addr, n.DeposedKey)
 
 	// Read the state for the deposed resource instance
-	state, err := n.readResourceInstanceStateDeposed(ctx, n.Addr, n.DeposedKey)
+	state, err := n.readResourceInstanceStateDeposed(traceCtx, ctx, n.Addr, n.DeposedKey)
 	diags = diags.Append(err)
 	if diags.HasErrors() {
 		return diags
@@ -96,13 +97,13 @@ func (n *NodePlanDeposedResourceInstanceObject) Execute(ctx EvalContext, op walk
 
 	// Note any upgrades that readResourceInstanceState might've done in the
 	// prevRunState, so that it'll conform to current schema.
-	diags = diags.Append(n.writeResourceInstanceStateDeposed(ctx, n.DeposedKey, state, prevRunState))
+	diags = diags.Append(n.writeResourceInstanceStateDeposed(traceCtx, ctx, n.DeposedKey, state, prevRunState))
 	if diags.HasErrors() {
 		return diags
 	}
 	// Also the refreshState, because that should still reflect schema upgrades
 	// even if not refreshing.
-	diags = diags.Append(n.writeResourceInstanceStateDeposed(ctx, n.DeposedKey, state, refreshState))
+	diags = diags.Append(n.writeResourceInstanceStateDeposed(traceCtx, ctx, n.DeposedKey, state, refreshState))
 	if diags.HasErrors() {
 		return diags
 	}
@@ -120,13 +121,13 @@ func (n *NodePlanDeposedResourceInstanceObject) Execute(ctx EvalContext, op walk
 		// resource during Delete correctly. If this is a simple refresh,
 		// OpenTofu is expected to remove the missing resource from the state
 		// entirely
-		refreshedState, refreshDiags := n.refresh(ctx, n.DeposedKey, state)
+		refreshedState, refreshDiags := n.refresh(traceCtx, ctx, n.DeposedKey, state)
 		diags = diags.Append(refreshDiags)
 		if diags.HasErrors() {
 			return diags
 		}
 
-		diags = diags.Append(n.writeResourceInstanceStateDeposed(ctx, n.DeposedKey, refreshedState, refreshState))
+		diags = diags.Append(n.writeResourceInstanceStateDeposed(traceCtx, ctx, n.DeposedKey, refreshedState, refreshState))
 		if diags.HasErrors() {
 			return diags
 		}
@@ -151,7 +152,7 @@ func (n *NodePlanDeposedResourceInstanceObject) Execute(ctx EvalContext, op walk
 		if shouldForget {
 			change = n.planForget(ctx, state, n.DeposedKey)
 		} else {
-			change, planDiags = n.planDestroy(ctx, state, n.DeposedKey)
+			change, planDiags = n.planDestroy(traceCtx, ctx, state, n.DeposedKey)
 		}
 
 		diags = diags.Append(planDiags)
@@ -167,16 +168,16 @@ func (n *NodePlanDeposedResourceInstanceObject) Execute(ctx EvalContext, op walk
 		// now just need to get the deposed object destroyed, because there
 		// should be a new object already serving as its replacement.
 
-		diags = diags.Append(n.writeChange(ctx, change, n.DeposedKey))
+		diags = diags.Append(n.writeChange(traceCtx, ctx, change, n.DeposedKey))
 		if diags.HasErrors() {
 			return diags
 		}
 
-		diags = diags.Append(n.writeResourceInstanceStateDeposed(ctx, n.DeposedKey, nil, workingState))
+		diags = diags.Append(n.writeResourceInstanceStateDeposed(traceCtx, ctx, n.DeposedKey, nil, workingState))
 	} else {
 		// The working state should at least be updated with the result
 		// of upgrading and refreshing from above.
-		diags = diags.Append(n.writeResourceInstanceStateDeposed(ctx, n.DeposedKey, state, workingState))
+		diags = diags.Append(n.writeResourceInstanceStateDeposed(traceCtx, ctx, n.DeposedKey, state, workingState))
 	}
 
 	return diags
@@ -249,11 +250,11 @@ func (n *NodeDestroyDeposedResourceInstanceObject) ModifyCreateBeforeDestroy(v b
 }
 
 // GraphNodeExecutable impl.
-func (n *NodeDestroyDeposedResourceInstanceObject) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *NodeDestroyDeposedResourceInstanceObject) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	var change *plans.ResourceInstanceChange
 
 	// Read the state for the deposed resource instance
-	state, err := n.readResourceInstanceStateDeposed(ctx, n.Addr, n.DeposedKey)
+	state, err := n.readResourceInstanceStateDeposed(traceCtx, ctx, n.Addr, n.DeposedKey)
 	if err != nil {
 		return diags.Append(err)
 	}
@@ -263,7 +264,7 @@ func (n *NodeDestroyDeposedResourceInstanceObject) Execute(ctx EvalContext, op w
 		return diags
 	}
 
-	change, destroyPlanDiags := n.planDestroy(ctx, state, n.DeposedKey)
+	change, destroyPlanDiags := n.planDestroy(traceCtx, ctx, state, n.DeposedKey)
 	diags = diags.Append(destroyPlanDiags)
 	if diags.HasErrors() {
 		return diags
@@ -276,14 +277,14 @@ func (n *NodeDestroyDeposedResourceInstanceObject) Execute(ctx EvalContext, op w
 	}
 
 	// we pass a nil configuration to apply because we are destroying
-	state, applyDiags := n.apply(ctx, state, change, nil, instances.RepetitionData{}, false)
+	state, applyDiags := n.apply(traceCtx, ctx, state, change, nil, instances.RepetitionData{}, false)
 	diags = diags.Append(applyDiags)
 	// don't return immediately on errors, we need to handle the state
 
 	// Always write the resource back to the state deposed. If it
 	// was successfully destroyed it will be pruned. If it was not, it will
 	// be caught on the next run.
-	writeDiags := n.writeResourceInstanceState(ctx, state)
+	writeDiags := n.writeResourceInstanceState(traceCtx, ctx, state)
 	diags.Append(writeDiags)
 	if diags.HasErrors() {
 		return diags
@@ -316,7 +317,7 @@ func (n *graphNodeDeposer) SetPreallocatedDeposedKey(key states.DeposedKey) {
 	n.PreallocatedDeposedKey = key
 }
 
-func (n *NodeDestroyDeposedResourceInstanceObject) writeResourceInstanceState(ctx EvalContext, obj *states.ResourceInstanceObject) error {
+func (n *NodeDestroyDeposedResourceInstanceObject) writeResourceInstanceState(traceCtx context.Context, ctx EvalContext, obj *states.ResourceInstanceObject) error {
 	absAddr := n.Addr
 	key := n.DeposedKey
 	state := ctx.State()
@@ -333,7 +334,7 @@ func (n *NodeDestroyDeposedResourceInstanceObject) writeResourceInstanceState(ct
 		return nil
 	}
 
-	_, providerSchema, err := getProvider(ctx, n.ResolvedProvider)
+	_, providerSchema, err := getProvider(traceCtx, ctx, n.ResolvedProvider)
 	if err != nil {
 		return err
 	}
@@ -398,9 +399,9 @@ func (n *NodeForgetDeposedResourceInstanceObject) References() []*addrs.Referenc
 }
 
 // GraphNodeExecutable impl.
-func (n *NodeForgetDeposedResourceInstanceObject) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *NodeForgetDeposedResourceInstanceObject) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	// Read the state for the deposed resource instance
-	state, err := n.readResourceInstanceStateDeposed(ctx, n.Addr, n.DeposedKey)
+	state, err := n.readResourceInstanceStateDeposed(traceCtx, ctx, n.Addr, n.DeposedKey)
 	if err != nil {
 		return diags.Append(err)
 	}

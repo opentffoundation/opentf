@@ -6,11 +6,14 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
 
 	"github.com/hashicorp/hcl/v2"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/instances"
@@ -113,7 +116,7 @@ func NewImportResolver() *ImportResolver {
 // them. The resolved import target would be an EvaluatedConfigImportTarget.
 // This function mutates the EvalContext's ImportResolver, adding the resolved import target.
 // The function errors if we failed to evaluate the ID or the address.
-func (ri *ImportResolver) ExpandAndResolveImport(importTarget *ImportTarget, ctx EvalContext) tfdiags.Diagnostics {
+func (ri *ImportResolver) ExpandAndResolveImport(traceCtx context.Context, importTarget *ImportTarget, ctx EvalContext) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	// The import block expressions are declared within the root module.
@@ -123,7 +126,7 @@ func (ri *ImportResolver) ExpandAndResolveImport(importTarget *ImportTarget, ctx
 
 	if importTarget.Config.ForEach != nil {
 		// The import target has a for_each attribute, so we need to expand it
-		forEachVal, evalDiags := evaluateForEachExpressionValue(importTarget.Config.ForEach, rootCtx, false, true)
+		forEachVal, evalDiags := evaluateForEachExpressionValue(traceCtx, importTarget.Config.ForEach, rootCtx, false, true)
 		diags = diags.Append(evalDiags)
 		if diags.HasErrors() {
 			return diags
@@ -142,11 +145,11 @@ func (ri *ImportResolver) ExpandAndResolveImport(importTarget *ImportTarget, ctx
 		}
 
 		for _, keyData := range repetitions {
-			diags = diags.Append(ri.resolveImport(importTarget, rootCtx, keyData))
+			diags = diags.Append(ri.resolveImport(traceCtx, importTarget, rootCtx, keyData))
 		}
 	} else {
 		// The import target is singular, no need to expand
-		diags = diags.Append(ri.resolveImport(importTarget, rootCtx, EvalDataForNoInstanceKey))
+		diags = diags.Append(ri.resolveImport(traceCtx, importTarget, rootCtx, EvalDataForNoInstanceKey))
 	}
 
 	return diags
@@ -157,16 +160,16 @@ func (ri *ImportResolver) ExpandAndResolveImport(importTarget *ImportTarget, ctx
 // EvaluatedConfigImportTarget.
 // This function mutates the EvalContext's ImportResolver, adding the resolved import target.
 // The function errors if we failed to evaluate the ID or the address.
-func (ri *ImportResolver) resolveImport(importTarget *ImportTarget, ctx EvalContext, keyData instances.RepetitionData) tfdiags.Diagnostics {
+func (ri *ImportResolver) resolveImport(tracedCtx context.Context, importTarget *ImportTarget, ctx EvalContext, keyData instances.RepetitionData) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
-	importId, evalDiags := evaluateImportIdExpression(importTarget.Config.ID, ctx, keyData)
+	importId, evalDiags := evaluateImportIdExpression(tracedCtx, importTarget.Config.ID, ctx, keyData)
 	diags = diags.Append(evalDiags)
 	if diags.HasErrors() {
 		return diags
 	}
 
-	importAddress, addressDiags := ctx.EvaluateImportAddress(importTarget.Config.To, keyData)
+	importAddress, addressDiags := ctx.EvaluateImportAddress(nil, importTarget.Config.To, keyData)
 	diags = diags.Append(addressDiags)
 	if diags.HasErrors() {
 		return diags
@@ -235,7 +238,11 @@ func (ri *ImportResolver) GetImport(address addrs.AbsResourceInstance) *Evaluate
 // Further, this operation also gracefully handles partial state. If during
 // an import there is a failure, all previously imported resources remain
 // imported.
-func (c *Context) Import(config *configs.Config, prevRunState *states.State, opts *ImportOpts) (*states.State, tfdiags.Diagnostics) {
+func (c *Context) Import(ctx context.Context, config *configs.Config, prevRunState *states.State, opts *ImportOpts) (*states.State, tfdiags.Diagnostics) {
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Context.Import")
+	defer span.End()
+
 	var diags tfdiags.Diagnostics
 
 	// Hold a lock since we can modify our own state here
@@ -259,14 +266,14 @@ func (c *Context) Import(config *configs.Config, prevRunState *states.State, opt
 	}
 
 	// Build the graph
-	graph, graphDiags := builder.Build(addrs.RootModuleInstance)
+	graph, graphDiags := builder.Build(ctx, addrs.RootModuleInstance)
 	diags = diags.Append(graphDiags)
 	if graphDiags.HasErrors() {
 		return state, diags
 	}
 
 	// Walk it
-	walker, walkDiags := c.walk(graph, walkImport, &graphWalkOpts{
+	walker, walkDiags := c.walk(ctx, graph, walkImport, &graphWalkOpts{
 		Config:     config,
 		InputState: state,
 	})

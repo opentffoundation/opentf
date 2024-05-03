@@ -12,6 +12,9 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/zclconf/go-cty/cty"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/encryption"
@@ -20,7 +23,6 @@ import (
 	"github.com/opentofu/opentofu/internal/provisioners"
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // InputMode defines what sort of input will be asked for when Input
@@ -153,10 +155,14 @@ func NewContext(opts *ContextOpts) (*Context, tfdiags.Diagnostics) {
 	}, diags
 }
 
-func (c *Context) Schemas(config *configs.Config, state *states.State) (*Schemas, tfdiags.Diagnostics) {
+func (c *Context) Schemas(ctx context.Context, config *configs.Config, state *states.State) (*Schemas, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
-	ret, err := loadSchemas(config, state, c.plugins)
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Context.Schemas")
+	defer span.End()
+
+	ret, err := loadSchemas(ctx, config, state, c.plugins)
 	if err != nil {
 		diags = diags.Append(tfdiags.Sourceless(
 			tfdiags.Error,
@@ -346,21 +352,26 @@ func (c *Context) watchStop(walker *ContextGraphWalker) (chan struct{}, <-chan s
 // before we reach this point, but this function can come into play in some
 // unusual cases outside of the main workflow, and can avoid some
 // potentially-more-confusing errors from later operations.
-func (c *Context) checkConfigDependencies(config *configs.Config) tfdiags.Diagnostics {
+func (c *Context) checkConfigDependencies(ctx context.Context, config *configs.Config) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
-	// This checks the OpenTofu CLI version constraints specified in all of
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "Context.checkConfigDependencies")
+	defer span.End()
+
+	// This checks the OpenTofu CLI version constraints specified in all
 	// the modules.
-	diags = diags.Append(CheckCoreVersionRequirements(config))
+	diags = diags.Append(CheckCoreVersionRequirements(ctx, config))
 
 	// We only check that we have a factory for each required provider, and
 	// assume the caller already assured that any separately-installed
 	// plugins are of a suitable version, match expected checksums, etc.
-	providerReqs, hclDiags := config.ProviderRequirements()
+	providerReqs, hclDiags := config.ProviderRequirements(ctx)
 	diags = diags.Append(hclDiags)
 	if hclDiags.HasErrors() {
 		return diags
 	}
+
 	for providerAddr := range providerReqs {
 		if !c.plugins.HasProvider(providerAddr) {
 			if !providerAddr.IsBuiltIn() {

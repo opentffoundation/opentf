@@ -6,6 +6,7 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -46,14 +47,14 @@ func (n *NodeValidatableResource) Path() addrs.ModuleInstance {
 }
 
 // GraphNodeEvalable
-func (n *NodeValidatableResource) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *NodeValidatableResource) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	if n.Config == nil {
 		return diags
 	}
 
-	diags = diags.Append(n.validateResource(ctx))
+	diags = diags.Append(n.validateResource(traceCtx, ctx))
 
-	diags = diags.Append(n.validateCheckRules(ctx, n.Config))
+	diags = diags.Append(n.validateCheckRules(traceCtx, ctx, n.Config))
 
 	if managed := n.Config.Managed; managed != nil {
 		// Validate all the provisioners
@@ -74,7 +75,7 @@ func (n *NodeValidatableResource) Execute(ctx EvalContext, op walkOperation) (di
 			}
 
 			// Validate Provisioner Config
-			diags = diags.Append(n.validateProvisioner(ctx, &provisioner))
+			diags = diags.Append(n.validateProvisioner(traceCtx, ctx, &provisioner))
 			if diags.HasErrors() {
 				return diags
 			}
@@ -86,7 +87,7 @@ func (n *NodeValidatableResource) Execute(ctx EvalContext, op walkOperation) (di
 // validateProvisioner validates the configuration of a provisioner belonging to
 // a resource. The provisioner config is expected to contain the merged
 // connection configurations.
-func (n *NodeValidatableResource) validateProvisioner(ctx EvalContext, p *configs.Provisioner) tfdiags.Diagnostics {
+func (n *NodeValidatableResource) validateProvisioner(traceCtx context.Context, ctx EvalContext, p *configs.Provisioner) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	provisioner, err := ctx.Provisioner(p.Type)
@@ -107,7 +108,7 @@ func (n *NodeValidatableResource) validateProvisioner(ctx EvalContext, p *config
 	}
 
 	// Validate the provisioner's own config first
-	configVal, _, configDiags := n.evaluateBlock(ctx, p.Config, provisionerSchema)
+	configVal, _, configDiags := n.evaluateBlock(traceCtx, ctx, p.Config, provisionerSchema)
 	diags = diags.Append(configDiags)
 
 	if configVal == cty.NilVal {
@@ -131,16 +132,16 @@ func (n *NodeValidatableResource) validateProvisioner(ctx EvalContext, p *config
 		// configuration keys that are not valid for *any* communicator, catching
 		// typos early rather than waiting until we actually try to run one of
 		// the resource's provisioners.
-		_, _, connDiags := n.evaluateBlock(ctx, p.Connection.Config, connectionBlockSupersetSchema)
+		_, _, connDiags := n.evaluateBlock(traceCtx, ctx, p.Connection.Config, connectionBlockSupersetSchema)
 		diags = diags.Append(connDiags)
 	}
 	return diags
 }
 
-func (n *NodeValidatableResource) evaluateBlock(ctx EvalContext, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
+func (n *NodeValidatableResource) evaluateBlock(traceCtx context.Context, ctx EvalContext, body hcl.Body, schema *configschema.Block) (cty.Value, hcl.Body, tfdiags.Diagnostics) {
 	keyData, selfAddr := n.stubRepetitionData(n.Config.Count != nil, n.Config.ForEach != nil)
 
-	return ctx.EvaluateBlock(body, schema, selfAddr, keyData)
+	return ctx.EvaluateBlock(traceCtx, body, schema, selfAddr, keyData)
 }
 
 // connectionBlockSupersetSchema is a schema representing the superset of all
@@ -279,10 +280,10 @@ var connectionBlockSupersetSchema = &configschema.Block{
 	},
 }
 
-func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diagnostics {
+func (n *NodeValidatableResource) validateResource(traceCtx context.Context, ctx EvalContext) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
-	provider, providerSchema, err := getProvider(ctx, n.ResolvedProvider)
+	provider, providerSchema, err := getProvider(traceCtx, ctx, n.ResolvedProvider)
 	diags = diags.Append(err)
 	if diags.HasErrors() {
 		return diags
@@ -311,11 +312,11 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 		}
 
 		// Evaluate the for_each expression here so we can expose the diagnostics
-		forEachDiags := validateForEach(ctx, n.Config.ForEach)
+		forEachDiags := validateForEach(traceCtx, ctx, n.Config.ForEach)
 		diags = diags.Append(forEachDiags)
 	}
 
-	diags = diags.Append(validateDependsOn(ctx, n.Config.DependsOn))
+	diags = diags.Append(validateDependsOn(traceCtx, ctx, n.Config.DependsOn))
 
 	// Validate the provider_meta block for the provider this resource
 	// belongs to, if there is one.
@@ -380,7 +381,7 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 			return diags
 		}
 
-		configVal, _, valDiags := ctx.EvaluateBlock(n.Config.Config, schema, nil, keyData)
+		configVal, _, valDiags := ctx.EvaluateBlock(traceCtx, n.Config.Config, schema, nil, keyData)
 		diags = diags.Append(valDiags)
 		if valDiags.HasErrors() {
 			return diags
@@ -426,7 +427,7 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 			Config:   unmarkedConfigVal,
 		}
 
-		resp := provider.ValidateResourceConfig(req)
+		resp := provider.ValidateResourceConfig(traceCtx, req)
 		diags = diags.Append(resp.Diagnostics.InConfigBody(n.Config.Config, n.Addr.String()))
 
 	case addrs.DataResourceMode:
@@ -454,7 +455,7 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 			return diags
 		}
 
-		configVal, _, valDiags := ctx.EvaluateBlock(n.Config.Config, schema, nil, keyData)
+		configVal, _, valDiags := ctx.EvaluateBlock(traceCtx, n.Config.Config, schema, nil, keyData)
 		diags = diags.Append(valDiags)
 		if valDiags.HasErrors() {
 			return diags
@@ -467,22 +468,22 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 			Config:   unmarkedConfigVal,
 		}
 
-		resp := provider.ValidateDataResourceConfig(req)
+		resp := provider.ValidateDataResourceConfig(traceCtx, req)
 		diags = diags.Append(resp.Diagnostics.InConfigBody(n.Config.Config, n.Addr.String()))
 	}
 
 	return diags
 }
 
-func (n *NodeValidatableResource) evaluateExpr(ctx EvalContext, expr hcl.Expression, wantTy cty.Type, self addrs.Referenceable, keyData instances.RepetitionData) (cty.Value, tfdiags.Diagnostics) {
+func (n *NodeValidatableResource) evaluateExpr(traceCtx context.Context, ctx EvalContext, expr hcl.Expression, wantTy cty.Type, self addrs.Referenceable, keyData instances.RepetitionData) (cty.Value, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	refs, refDiags := lang.ReferencesInExpr(addrs.ParseRef, expr)
 	diags = diags.Append(refDiags)
 
-	scope := ctx.EvaluationScope(self, nil, keyData)
+	scope := ctx.EvaluationScope(traceCtx, self, nil, keyData)
 
-	hclCtx, moreDiags := scope.EvalContext(refs)
+	hclCtx, moreDiags := scope.EvalContext(traceCtx, refs)
 	diags = diags.Append(moreDiags)
 
 	result, hclDiags := expr.Value(hclCtx)
@@ -525,24 +526,24 @@ func (n *NodeValidatableResource) stubRepetitionData(hasCount, hasForEach bool) 
 	return keyData, selfAddr
 }
 
-func (n *NodeValidatableResource) validateCheckRules(ctx EvalContext, config *configs.Resource) tfdiags.Diagnostics {
+func (n *NodeValidatableResource) validateCheckRules(traceCtx context.Context, ctx EvalContext, config *configs.Resource) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	keyData, selfAddr := n.stubRepetitionData(n.Config.Count != nil, n.Config.ForEach != nil)
 
 	for _, cr := range config.Preconditions {
-		_, conditionDiags := n.evaluateExpr(ctx, cr.Condition, cty.Bool, nil, keyData)
+		_, conditionDiags := n.evaluateExpr(traceCtx, ctx, cr.Condition, cty.Bool, nil, keyData)
 		diags = diags.Append(conditionDiags)
 
-		_, errorMessageDiags := n.evaluateExpr(ctx, cr.ErrorMessage, cty.Bool, nil, keyData)
+		_, errorMessageDiags := n.evaluateExpr(traceCtx, ctx, cr.ErrorMessage, cty.Bool, nil, keyData)
 		diags = diags.Append(errorMessageDiags)
 	}
 
 	for _, cr := range config.Postconditions {
-		_, conditionDiags := n.evaluateExpr(ctx, cr.Condition, cty.Bool, selfAddr, keyData)
+		_, conditionDiags := n.evaluateExpr(traceCtx, ctx, cr.Condition, cty.Bool, selfAddr, keyData)
 		diags = diags.Append(conditionDiags)
 
-		_, errorMessageDiags := n.evaluateExpr(ctx, cr.ErrorMessage, cty.Bool, selfAddr, keyData)
+		_, errorMessageDiags := n.evaluateExpr(traceCtx, ctx, cr.ErrorMessage, cty.Bool, selfAddr, keyData)
 		diags = diags.Append(errorMessageDiags)
 	}
 
@@ -564,8 +565,8 @@ func validateCount(ctx EvalContext, expr hcl.Expression) (diags tfdiags.Diagnost
 	return diags
 }
 
-func validateForEach(ctx EvalContext, expr hcl.Expression) (diags tfdiags.Diagnostics) {
-	val, forEachDiags := evaluateForEachExpressionValue(expr, ctx, true, false)
+func validateForEach(traceCtx context.Context, ctx EvalContext, expr hcl.Expression) (diags tfdiags.Diagnostics) {
+	val, forEachDiags := evaluateForEachExpressionValue(traceCtx, expr, ctx, true, false)
 	// If the value isn't known then that's the best we can do for now, but
 	// we'll check more thoroughly during the plan walk
 	if !val.IsKnown() {
@@ -579,7 +580,7 @@ func validateForEach(ctx EvalContext, expr hcl.Expression) (diags tfdiags.Diagno
 	return diags
 }
 
-func validateDependsOn(ctx EvalContext, dependsOn []hcl.Traversal) (diags tfdiags.Diagnostics) {
+func validateDependsOn(traceCtx context.Context, ctx EvalContext, dependsOn []hcl.Traversal) (diags tfdiags.Diagnostics) {
 	for _, traversal := range dependsOn {
 		ref, refDiags := addrs.ParseRef(traversal)
 		diags = diags.Append(refDiags)
@@ -596,9 +597,9 @@ func validateDependsOn(ctx EvalContext, dependsOn []hcl.Traversal) (diags tfdiag
 		// we'll just eval it and count on the fact that our evaluator will
 		// detect references to non-existent objects.
 		if !diags.HasErrors() {
-			scope := ctx.EvaluationScope(nil, nil, EvalDataForNoInstanceKey)
+			scope := ctx.EvaluationScope(traceCtx, nil, nil, EvalDataForNoInstanceKey)
 			if scope != nil { // sometimes nil in tests, due to incomplete mocks
-				_, refDiags = scope.EvalReference(ref, cty.DynamicPseudoType)
+				_, refDiags = scope.EvalReference(traceCtx, ref, cty.DynamicPseudoType)
 				diags = diags.Append(refDiags)
 			}
 		}

@@ -6,6 +6,7 @@
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -77,11 +78,11 @@ func (n *graphNodeImportState) ModulePath() addrs.Module {
 }
 
 // GraphNodeExecutable impl.
-func (n *graphNodeImportState) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *graphNodeImportState) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	// Reset our states
 	n.states = nil
 
-	provider, _, err := getProvider(ctx, n.ResolvedProvider)
+	provider, _, err := getProvider(traceCtx, ctx, n.ResolvedProvider)
 	diags = diags.Append(err)
 	if diags.HasErrors() {
 		return diags
@@ -126,7 +127,7 @@ func (n *graphNodeImportState) Execute(ctx EvalContext, op walkOperation) (diags
 // and state inserts we need to do for our import state. Since they're new
 // resources they don't depend on anything else and refreshes are isolated
 // so this is nearly a perfect use case for dynamic expand.
-func (n *graphNodeImportState) DynamicExpand(ctx EvalContext) (*Graph, error) {
+func (n *graphNodeImportState) DynamicExpand(traceCtx context.Context, ctx EvalContext) (*Graph, error) {
 	var diags tfdiags.Diagnostics
 
 	g := &Graph{Path: ctx.Path()}
@@ -224,7 +225,7 @@ func (n *graphNodeImportStateSub) Path() addrs.ModuleInstance {
 }
 
 // GraphNodeExecutable impl.
-func (n *graphNodeImportStateSub) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *graphNodeImportStateSub) Execute(traceCtx context.Context, ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
 	// If the Ephemeral type isn't set, then it is an error
 	if n.State.TypeName == "" {
 		diags = diags.Append(fmt.Errorf("import of %s didn't set type", n.TargetAddr.String()))
@@ -240,7 +241,7 @@ func (n *graphNodeImportStateSub) Execute(ctx EvalContext, op walkOperation) (di
 			ResolvedProvider: n.ResolvedProvider,
 		},
 	}
-	state, refreshDiags := riNode.refresh(ctx, states.NotDeposed, state)
+	state, refreshDiags := riNode.refresh(traceCtx, ctx, states.NotDeposed, state)
 	diags = diags.Append(refreshDiags)
 	if diags.HasErrors() {
 		return diags
@@ -268,10 +269,10 @@ func (n *graphNodeImportStateSub) Execute(ctx EvalContext, op walkOperation) (di
 	// Insert marks from configuration
 	if n.Config != nil {
 		// Since the import command allow import resource with incomplete configuration, we ignore diagnostics here
-		valueWithConfigurationSchemaMarks, _, _ := ctx.EvaluateBlock(n.Config.Config, n.Schema, nil, EvalDataForNoInstanceKey)
+		valueWithConfigurationSchemaMarks, _, _ := ctx.EvaluateBlock(traceCtx, n.Config.Config, n.Schema, nil, EvalDataForNoInstanceKey)
 		state.Value = copyMarksFromValue(state.Value, valueWithConfigurationSchemaMarks)
 	}
 
-	diags = diags.Append(riNode.writeResourceInstanceState(ctx, state, workingState))
+	diags = diags.Append(riNode.writeResourceInstanceState(traceCtx, ctx, state, workingState))
 	return diags
 }
