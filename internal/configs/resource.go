@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	hcljson "github.com/hashicorp/hcl/v2/json"
 	"github.com/zclconf/go-cty/cty"
@@ -68,6 +67,7 @@ type ManagedResource struct {
 	Connection   *Connection
 	Provisioners []*Provisioner
 
+	lifecycleBody       *hcl.BodyContent
 	CreateBeforeDestroy bool
 	PreventDestroy      bool
 	IgnoreChanges       []hcl.Traversal
@@ -198,85 +198,14 @@ func decodeResourceBlock(block *hcl.Block, override bool) (*Resource, hcl.Diagno
 			lcContent, lcDiags := block.Body.Content(resourceLifecycleBlockSchema)
 			diags = append(diags, lcDiags...)
 
-			if attr, exists := lcContent.Attributes["create_before_destroy"]; exists {
-				valDiags := gohcl.DecodeExpression(attr.Expr, nil, &r.Managed.CreateBeforeDestroy)
-				diags = append(diags, valDiags...)
-				r.Managed.CreateBeforeDestroySet = true
-			}
-
-			if attr, exists := lcContent.Attributes["prevent_destroy"]; exists {
-				valDiags := gohcl.DecodeExpression(attr.Expr, nil, &r.Managed.PreventDestroy)
-				diags = append(diags, valDiags...)
-				r.Managed.PreventDestroySet = true
-			}
+			// Store the content for later
+			r.Managed.lifecycleBody = lcContent
 
 			if attr, exists := lcContent.Attributes["replace_triggered_by"]; exists {
 				exprs, hclDiags := decodeReplaceTriggeredBy(attr.Expr)
 				diags = diags.Extend(hclDiags)
 
 				r.TriggersReplacement = append(r.TriggersReplacement, exprs...)
-			}
-
-			if attr, exists := lcContent.Attributes["ignore_changes"]; exists {
-
-				// ignore_changes can either be a list of relative traversals
-				// or it can be just the keyword "all" to ignore changes to this
-				// resource entirely.
-				//   ignore_changes = [ami, instance_type]
-				//   ignore_changes = all
-				// We also allow two legacy forms for compatibility with earlier
-				// versions:
-				//   ignore_changes = ["ami", "instance_type"]
-				//   ignore_changes = ["*"]
-
-				kw := hcl.ExprAsKeyword(attr.Expr)
-
-				switch {
-				case kw == "all":
-					r.Managed.IgnoreAllChanges = true
-				default:
-					exprs, listDiags := hcl.ExprList(attr.Expr)
-					diags = append(diags, listDiags...)
-
-					var ignoreAllRange hcl.Range
-
-					for _, expr := range exprs {
-
-						// our expr might be the literal string "*", which
-						// we accept as a deprecated way of saying "all".
-						if shimIsIgnoreChangesStar(expr) {
-							r.Managed.IgnoreAllChanges = true
-							ignoreAllRange = expr.Range()
-							diags = append(diags, &hcl.Diagnostic{
-								Severity: hcl.DiagError,
-								Summary:  "Invalid ignore_changes wildcard",
-								Detail:   "The [\"*\"] form of ignore_changes wildcard is was deprecated and is now invalid. Use \"ignore_changes = all\" to ignore changes to all attributes.",
-								Subject:  attr.Expr.Range().Ptr(),
-							})
-							continue
-						}
-
-						expr, shimDiags := shimTraversalInString(expr, false)
-						diags = append(diags, shimDiags...)
-
-						traversal, travDiags := hcl.RelTraversalForExpr(expr)
-						diags = append(diags, travDiags...)
-						if len(traversal) != 0 {
-							r.Managed.IgnoreChanges = append(r.Managed.IgnoreChanges, traversal)
-						}
-					}
-
-					if r.Managed.IgnoreAllChanges && len(r.Managed.IgnoreChanges) != 0 {
-						diags = append(diags, &hcl.Diagnostic{
-							Severity: hcl.DiagError,
-							Summary:  "Invalid ignore_changes ruleset",
-							Detail:   "Cannot mix wildcard string \"*\" with non-wildcard references.",
-							Subject:  &ignoreAllRange,
-							Context:  attr.Expr.Range().Ptr(),
-						})
-					}
-
-				}
 			}
 
 			for _, block := range lcContent.Blocks {
@@ -645,6 +574,207 @@ func decodeReplaceTriggeredBy(expr hcl.Expression) ([]hcl.Expression, hcl.Diagno
 		}
 	}
 	return exprs, diags
+}
+
+func (r *Resource) decodeStaticFields(eval *StaticEvaluator) hcl.Diagnostics {
+	return r.decodeManagedFields(eval)
+}
+
+func (r *Resource) decodeManagedFields(eval *StaticEvaluator) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	if r.Managed == nil {
+		return diags
+	}
+
+	lcContent := r.Managed.lifecycleBody
+
+	if lcContent == nil {
+		return diags
+	}
+
+	if attr, exists := lcContent.Attributes["create_before_destroy"]; exists {
+		ident := StaticIdentifier{Module: eval.call.addr, Subject: fmt.Sprintf("%s.%s.lifecycle.%s", r.Type, r.Name, attr.Name), DeclRange: attr.Range}
+		valDiags := eval.DecodeExpression(attr.Expr, ident, &r.Managed.CreateBeforeDestroy)
+		diags = append(diags, valDiags...)
+		r.Managed.CreateBeforeDestroySet = true
+	}
+
+	if attr, exists := lcContent.Attributes["prevent_destroy"]; exists {
+		ident := StaticIdentifier{Module: eval.call.addr, Subject: fmt.Sprintf("%s.%s.lifecycle.%s", r.Type, r.Name, attr.Name), DeclRange: attr.Range}
+		valDiags := eval.DecodeExpression(attr.Expr, ident, &r.Managed.PreventDestroy)
+		diags = append(diags, valDiags...)
+		r.Managed.PreventDestroySet = true
+	}
+
+	lcContent = r.Managed.lifecycleBody
+
+	attr, exists := lcContent.Attributes["ignore_changes"]
+
+	if !exists {
+		return diags
+	}
+
+	return diags.Extend(r.decodeLifecycleIgnoreChanges(eval, attr))
+}
+
+func (r *Resource) decodeLifecycleIgnoreChanges(eval *StaticEvaluator, attr *hcl.Attribute) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+
+	// ignore_changes can either be a list of relative traversals
+	// or it can be just the keyword "all" to ignore changes to this
+	// resource entirely.
+	//   ignore_changes = [ami, instance_type] // hclsyntax.TulpleConsExpr *ExprList* hclsyntax.ScopeTraversalExpression
+	//   ignore_changes = all // hclsyntax.ScopeTraversalExpression
+	//
+	// We support the following in a static context:
+	//   ignore_changes = <static_expression>
+	//   ignore_changes = local.bar
+	// With the following forms:
+	//   <static_expression> = ["ami", "instance_type"] // hclsyntax.TulpleConsExpr *ExprList* hclsyntax.TemplateExpr
+	//   <static_expression> = "all" hclsyntax.TemplateExpr
+	// For example:
+	//   ignore_changes = var.ignore_changes // hclsyntax.ScopeTraversalExpression
+	//   ignore_changes = var.changes_overridden ? local.valid_overrides : []
+	//
+	// List comprehension is also supported (if resolvable in static context)
+	// [for x in range(10): x] hclsyntax.ForExpr
+	//
+	// We also handle two legacy forms for compatibility with earlier
+	// versions:
+	//   ignore_changes = ["ami", "instance_type"]
+	//   ignore_changes = ["*"]
+
+	// Potential inputs:
+	// * -> ERROR
+	// "*" -> ERROR
+	// all -> IgnoreAllChanges = true
+	// "all" -> IgnoreAllChanges = true
+	// [all] -> [all]
+	// ["all"] -> [all]
+	// [] -> []
+	// [foo] -> [foo]
+	// ["foo"] -> [foo]
+	// [var.bar] -> EITHER value of var.bar if it exists or var.bar traversal. This scenario is ambiguous
+	// [foo, "bar"] -> [foo, bar]
+	// [foo, var.bar] -> [foo, var.bar]
+	// ["foo", var.bar] -> [foo, ${var.bar}]
+	// concat(["foo"], ["bar"]) -> [foo, bar]
+	// concat([foo], [bar]) -> ERROR!
+
+	if hcl.ExprAsKeyword(attr.Expr) == "all" {
+		r.Managed.IgnoreAllChanges = true
+		return diags
+	}
+
+	// Try evaluating as static expression
+	ident := StaticIdentifier{Module: eval.call.addr, Subject: fmt.Sprintf("%s.%s.lifecycle.%s", r.Type, r.Name, attr.Name), DeclRange: attr.Range}
+	val, valDiags := eval.Evaluate(attr.Expr, ident)
+	if valDiags.HasErrors() {
+		// Either a ExprList or a Invalid Expression
+		if listExprs, listDiags := hcl.ExprList(attr.Expr); listDiags == nil { // This is a bit unsafe, but the only scenario in which diags are not nil is a generic "It's not a exprlist" error
+			// ExprList
+			for _, expr := range listExprs {
+				// our expr might be the literal string "*", which
+				// we accept as a deprecated way of saying "all".
+				if shimIsIgnoreChangesStar(expr) {
+					// This is no longer allowed and will be handled below
+					r.Managed.IgnoreChanges = append(r.Managed.IgnoreChanges, hcl.Traversal{hcl.TraverseAttr{Name: "*", SrcRange: expr.Range()}})
+					continue
+				}
+
+				// Might be a quoted string, sub in a parsed traversable expression
+				shimExpr, shimDiags := shimTraversalInString(expr, false)
+				diags = append(diags, shimDiags...)
+				if shimDiags.HasErrors() {
+					continue
+				}
+
+				traversal, travDiags := hcl.RelTraversalForExpr(shimExpr)
+				diags = append(diags, travDiags...)
+				if travDiags.HasErrors() {
+					continue
+				}
+				r.Managed.IgnoreChanges = append(r.Managed.IgnoreChanges, traversal)
+			}
+		} else {
+			// Invalid Expression
+			return diags.Extend(valDiags)
+		}
+	} else {
+		if val.Type().IsListType() || val.Type().IsSetType() || val.Type().IsTupleType() {
+			for _, item := range val.AsValueSlice() {
+				if item.Type() != cty.String {
+					diags = diags.Append(&hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "Invalid ignore_changes input",
+						Detail:   fmt.Sprintf(`Expected collection of string, not %s`, item.Type().FriendlyName()),
+						Subject:  attr.Expr.Range().Ptr(),
+					})
+					continue
+				}
+
+				if item.AsString() == "*" {
+					r.Managed.IgnoreChanges = append(r.Managed.IgnoreChanges, hcl.Traversal{hcl.TraverseAttr{Name: "*", SrcRange: attr.Expr.Range()}})
+					continue
+				}
+				traversal, tDiags := hclsyntax.ParseTraversalAbs(
+					[]byte(item.AsString()),
+					"",
+					hcl.InitialPos,
+				)
+				if tDiags.HasErrors() {
+					// Record a helpful message before cryptic parse message(s)
+					diags = diags.Append(&hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "Invalid ignore_changes input",
+						Detail:   fmt.Sprintf(`Unable to parse %q as traversal`, item.AsString()),
+						Subject:  attr.Expr.Range().Ptr(),
+					}).Extend(tDiags)
+					continue
+				}
+				diags = diags.Extend(tDiags)
+
+				traversal[0] = hcl.TraverseAttr{
+					Name:     traversal[0].(hcl.TraverseRoot).Name,
+					SrcRange: attr.Expr.Range(),
+				}
+				r.Managed.IgnoreChanges = append(r.Managed.IgnoreChanges, traversal)
+			}
+		} else if val.Type() == cty.String {
+			if val.AsString() == "all" {
+				r.Managed.IgnoreAllChanges = true
+			} else {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid ignore_changes ruleset",
+					Detail:   fmt.Sprintf("Expected \"all\" or [items], not %s.", val.AsString()),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			}
+			return diags
+		} else {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid ignore_changes ruleset",
+				Detail:   fmt.Sprintf("Unexpected type %s", val.Type().FriendlyName()),
+				Subject:  attr.Expr.Range().Ptr(),
+			})
+		}
+	}
+
+	for _, trav := range r.Managed.IgnoreChanges {
+		if root, ok := trav[0].(hcl.TraverseAttr); ok && root.Name == "*" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid ignore_changes wildcard",
+				Detail:   "The [\"*\"] form of ignore_changes wildcard is was deprecated and is now invalid. Use \"ignore_changes = all\" to ignore changes to all attributes.",
+				Subject:  attr.Expr.Range().Ptr(),
+			})
+			continue
+		}
+	}
+
+	return diags
 }
 
 type ProviderConfigRef struct {
