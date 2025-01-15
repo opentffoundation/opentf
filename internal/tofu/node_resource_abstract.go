@@ -514,14 +514,17 @@ func (n *NodeAbstractResource) writeResourceState(ctx EvalContext, addr addrs.Ab
 	return diags
 }
 
+func resourceTypesDiffer(a, b addrs.AbsResourceInstance) bool {
+	return a.Resource.Resource.Type != b.Resource.Resource.Type
+}
+
 // readResourceInstanceState reads the current object for a specific instance in
 // the state.
 func (n *NodeAbstractResourceInstance) readResourceInstanceState(ctx EvalContext, addr addrs.AbsResourceInstance) (*states.ResourceInstanceObject, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	provider, providerSchema, err := getProvider(ctx, n.ResolvedProvider.ProviderConfig, n.ResolvedProviderKey)
 	if err != nil {
-		diags = diags.Append(err)
-		return nil, diags
+		return nil, diags.Append(err)
 	}
 
 	log.Printf("[TRACE] readResourceInstanceState: reading state for %s", addr)
@@ -538,11 +541,16 @@ func (n *NodeAbstractResourceInstance) readResourceInstanceState(ctx EvalContext
 		// Shouldn't happen since we should've failed long ago if no schema is present
 		return nil, diags.Append(fmt.Errorf("no schema available for %s while reading state; this is a bug in OpenTofu and should be reported", addr))
 	}
-	src, upgradeDiags := upgradeResourceState(addr, provider, src, schema, currentVersion)
-	if n.Config != nil {
-		upgradeDiags = upgradeDiags.InConfigBody(n.Config.Config, addr.String())
+
+	if prevAddr := n.prevRunAddr(ctx); resourceTypesDiffer(addr, prevAddr) {
+		src, diags = moveResourceState(addr, prevAddr, provider, src, schema, currentVersion)
+	} else {
+		src, diags = upgradeResourceState(addr, provider, src, schema, currentVersion)
 	}
-	diags = diags.Append(upgradeDiags)
+
+	if n.Config != nil {
+		diags = diags.InConfigBody(n.Config.Config, addr.String())
+	}
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -582,14 +590,17 @@ func (n *NodeAbstractResourceInstance) readResourceInstanceStateDeposed(ctx Eval
 	if schema == nil {
 		// Shouldn't happen since we should've failed long ago if no schema is present
 		return nil, diags.Append(fmt.Errorf("no schema available for %s while reading state; this is a bug in OpenTofu and should be reported", addr))
-
 	}
 
-	src, upgradeDiags := upgradeResourceState(addr, provider, src, schema, currentVersion)
+	if prevAddr := n.prevRunAddr(ctx); resourceTypesDiffer(addr, prevAddr) {
+		src, diags = moveResourceState(addr, prevAddr, provider, src, schema, currentVersion)
+	} else {
+		src, diags = upgradeResourceState(addr, provider, src, schema, currentVersion)
+	}
+
 	if n.Config != nil {
-		upgradeDiags = upgradeDiags.InConfigBody(n.Config.Config, addr.String())
+		diags = diags.InConfigBody(n.Config.Config, addr.String())
 	}
-	diags = diags.Append(upgradeDiags)
 	if diags.HasErrors() {
 		// Note that we don't have any channel to return warnings here. We'll
 		// accept that for now since warnings during a schema upgrade would

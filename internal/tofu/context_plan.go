@@ -482,6 +482,7 @@ func (c *Context) prePlanFindAndApplyMoves(config *configs.Config, prevRunState 
 		moveStmts = append(moveStmts, implicitMoveStmts...)
 	}
 	moveResults := refactoring.ApplyMoves(moveStmts, prevRunState)
+
 	return moveStmts, moveResults
 }
 
